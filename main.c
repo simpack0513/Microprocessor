@@ -9,11 +9,15 @@
 #define FEED 1
 #define PLAY 2
 #define FEEL 3
+#define ON 1
+#define OFF 0
 
 unsigned char ddrc[4];
 volatile int cnt;
 volatile int status = FREE;
 volatile int wait_time;
+volatile int feed_count = 0;
+volatile int state = OFF;
 
 unsigned char lv[2] = {
 	0x38,
@@ -45,12 +49,14 @@ ISR(TIMER0_OVF_vect){
 	
 	if(cnt == 500 * wait_time){
 		if (status == FREE) {
+			wait_time = 10;
+			feed_count = 100;
 			status = FEED;
 		}
-		else {
+		else if (status == FEED) {
+			wait_time = rand() % 7 + 1;
 			status = FREE;
 		}
-		wait_time = rand() % 7 + 1;
 		cnt = 0;
 	}
 }
@@ -58,9 +64,10 @@ ISR(TIMER0_OVF_vect){
 void init() {
 	DDRC = 0xff;
 	DDRG = 0x0f;
+	DDRE = 0x00;
 	
 	
-	// Ÿ�̾� ����
+	// 타미어 설정
 	TCCR0 = (0<<WGM01)|(0<<WGM00)|(0<<COM01)|(0<<COM00)|(1<<CS02)|(1<<CS01)|(0<<CS00);
 	TIMSK = (1<<TOIE0);
 	TCNT0 = 131;
@@ -96,15 +103,36 @@ void show_feed() {
 
 int main() {
 	init();
-	int i = 0;
-	int level = 15;
+	int level = 0;
 	
-	wait_time = rand() % 7 + 1;
 	
-	sei(); // Ÿ�̸�
+	wait_time = 3;
+	
+	sei(); // 타이머
 	
 	
 	while (1) {
+		
+		// 스위치 제어
+		if ((PINE & 0x10) == 0x00) {
+			if (state == OFF) {
+				state = ON;
+				if (status == FEED) {
+					feed_count -= 1;
+					if (feed_count == 0) {
+						level += 1;
+						cnt = 0;
+						wait_time = rand() % 7 + 5;
+						status = FREE;
+					}
+				}
+			}
+			else {
+				state = OFF;
+			}
+		}
+		// 스위치 끝
+		
 		switch (status) {
 			case FREE:
 				show_level(level);
