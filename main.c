@@ -8,7 +8,7 @@
 #define FREE 0
 #define FEED 1
 #define FEEL 2
-#define PLAY 3
+#define COLD 3
 #define ON 1
 #define OFF 0
 #define UP 1
@@ -19,6 +19,9 @@
 
 #define FS_SEL 131
 
+#define aTS75_CONFIG_REG 1
+#define aTS75_TEMP_REG 0
+
 unsigned char ddrc[4];
 volatile int cnt;
 volatile int status = FREE;
@@ -27,24 +30,11 @@ volatile int feed_count = 0;
 volatile int state = OFF;
 volatile int u_state = UP;
 volatile int feel_count = 0;
-
-//자이로 관련
-int error_rom = 10;
-int data_rom = 0;
-int read_number = 0;
-unsigned char data;
-unsigned char dataAdress = 0x3B;//가속도 값 부터  각속독 값까지 읽어오는 주소
-unsigned char datainformation[14];
-unsigned int accle_X;
-unsigned int accle_Y;
-unsigned int accle_Z;
-unsigned int temp;
-float ftemp;
-unsigned int angular_X;
-unsigned int angular_Y;
-unsigned int angular_Z;
-//
-
+volatile int temperature = 0;
+volatile int f_temperature = 0;
+volatile int feed_max = 0;
+volatile int feel_max = 0;
+volatile int cold_max = 0;
 
 unsigned char fnd[4];
 unsigned char lv[2] = {
@@ -77,18 +67,18 @@ ISR(TIMER0_OVF_vect){
 	
 	if(cnt == 500 * wait_time){
 		if (status == FREE) {
-			int num = rand() % 3 + 1;
+			int num = (rand()+20) % 3 + 1;
 			wait_time = 10;
 			if (num == FEED) {
-				feed_count = 100;
+				feed_count = feed_max;
 				status = FEED;
 			}
 			else if (num == FEEL) {
-				feel_count = 20;
+				feel_count = feel_max;
 				status = FEEL;
 			}
-			else if (num == PLAY) {
-				status = PLAY;
+			else if (num == COLD) {
+				status = COLD;
 			}
 		}
 		else if (status == FEED) {
@@ -99,7 +89,7 @@ ISR(TIMER0_OVF_vect){
 			wait_time = rand() % 7 + 1;
 			status = FREE;
 		}
-		else if (status == PLAY) {
+		else if (status == COLD) {
 			wait_time = rand() % 7 + 1;
 			status = FREE;
 		}
@@ -108,9 +98,11 @@ ISR(TIMER0_OVF_vect){
 }
 
 void init() {
+	DDRA = 0xff;
 	DDRC = 0xff;
 	DDRG = 0x0f;
-	DDRE = ((DDRE|(1<<TRIG)) & ~(1<<ECHO)); 
+	PORTD = 3;
+	DDRE = ((DDRE|(1<<TRIG)) & ~(1<<ECHO));
 	
 	
 	// 타미어 설정
@@ -119,9 +111,7 @@ void init() {
 	TCNT0 = 131;
 	//
 	
-	//I2C 설정
-	TWBR = 12;//400KHZ 맞추기
-	TWSR = 0x0;
+	
 	
 }
 
@@ -164,11 +154,11 @@ void show_feel() {
 	}
 }
 
-void show_play() {
-	ddrc[0] = 0x73;
-	ddrc[1] = 0x38;
-	ddrc[2] = 0x77;
-	ddrc[3] = 0x6E;
+void show_cold() {
+	ddrc[0] = 0x39;
+	ddrc[1] = 0x3f;
+	ddrc[2] = 0x38;
+	ddrc[3] = 0x5e;
 	
 	for (int i = 0; i < 4; i++) {
 		PORTC = ddrc[i];
@@ -194,20 +184,95 @@ void display_fnd(unsigned int value)
 	}
 }
 
+//온도센서 관련 함수
+void I2C_Init(void) {
+	TWBR = 12; // 16000000 / (16 + (2x12)) x prescaler = 400000Hz = 400kHz
+	TWSR = (0<<TWPS1) | (0<<TWPS0); // prescaler = 1
+	TWCR = 0x04;
+}
+void I2C_start(void) {
+	TWCR = (1<<TWINT) | (1<<TWSTA) | (1<<TWEN);
+	while (!(TWCR & (1<<TWINT)));
+}
+
+void I2C_write(unsigned char data) {
+	TWDR = data;
+	TWCR = (1<<TWINT) | (1<<TWEN);
+	while(!(TWCR & (1<<TWINT)));
+}
+unsigned char I2C_read(unsigned char ackVal) {
+	TWCR = (1<<TWINT) | (1<<TWEN) | (ackVal<<TWEA);
+	while(!(TWCR & (1<<TWINT)));
+	return TWDR;
+}
+void I2c_stop(void) {
+	TWCR = (1<<TWINT) | (1<<TWEN) | (1<<TWSTO);
+	for(int k=0; k<100; k++); //wait
+}
+
+void temp_init(void) {
+	I2C_Init();
+	I2C_start();
+	I2C_write(0b10011000);
+	I2C_write(aTS75_CONFIG_REG); // Configuration Register
+	I2C_write(0x00);
+	I2c_stop();
+}
+
+int temp_read(void) {
+	char high_byte, low_byte;
+	I2C_start();
+	I2C_write(0b10011000);
+	I2C_write(aTS75_TEMP_REG); // Temperature Register
+	I2C_start();
+	I2C_write(0b10011000 | 1); // Address + write (not read)
+	high_byte = I2C_read(1);
+	low_byte = I2C_read(0);
+	I2c_stop();
+	return ((high_byte<<8) | low_byte);
+}
+//
+
+void show_led(int num) {
+	int n = 0;
+	if (num <= 0) {
+		PORTA = 0x00;
+	}
+	else {
+		for (int i=0; i<num; i++) {
+			n = (1 << i) + n;
+		}
+		PORTA = n;
+	}
+}
+
 int main() {
 	init();
+	temp_init();
+	_delay_ms(400);
 	int level = 0;
-	unsigned int distance;
+	unsigned int distance = 0;
 	
 	wait_time = 3;
 	sei(); // 타이머
-	
+	//초기 온도 저장
+	f_temperature = temp_read();
+	_delay_ms(100);
 	
 	while (1) {
-		// 자이로 제어
-		if (status == PLAY) {
-			mpu6050_Write();
-			mpu6050_read();
+		feed_max = 100 + 20 * level;
+		feel_max = 20 + 5 * level;
+		cold_max = 150 + 15 * level;
+		
+		// 온도센서 제어
+		if (status == COLD) {
+			 temperature = temp_read();
+			 if (temperature > f_temperature + cold_max || temperature < f_temperature - cold_max) {
+				 level += 1;
+				 cnt = 0;
+				 wait_time = rand() % 7 + 5;
+				 status = FREE;
+			 }
 		}
 		
 		// 초음파 제어
@@ -274,92 +339,21 @@ int main() {
 		
 		switch (status) {
 			case FREE:
-				show_level(level);
-				break;
+			show_level(level);
+			show_led(0);
+			break;
 			case FEED:
-				show_feed();
-				break;
+			show_feed();
+			show_led((float)(feed_max - feed_count) / feed_max * 8);
+			break;
 			case FEEL:
-				show_feel();
-				break;
-			case PLAY:
-				show_play();
-				break;
+			show_feel();
+			show_led((float)(feel_max - feel_count) / feel_max * 8);
+			break;
+			case COLD:
+			show_cold();
+			show_led(abs((int)((float)(temperature - f_temperature) / cold_max * 8)));
+			break;
 		}
 	}
-}
-
-
-//자이로센서 관련 함수
-
-void mpu6050_Start(void){
-	TWCR = 0xA4;//명령으로 줘서 TWINT 1 -> 0(자동클리어)이 되가지고 SCL 값이 High, SDA, SCL 유효
-	//START MASTER 지정
-	while(!(TWCR&0x80));//TWINT 0 -> 1 이 되가지고 SCL 값이 0 이 될떄까지 기다림.
-	if((TWSR & 0xF8) != 0x08)Error((TWSR & 0xF8)); //스타트 문제 검출
-}
-void mpu6050_SLA_W(void){//들어가기 위한 비밀번호(SLA+W)
-	TWDR = 0xD0;//무언가의 값을 쓸때 0xD0,mpu6050 읽을 떄  0xD1
-	TWCR = 0x84;//명령으로 줘서 TWINT 1 -> 0(자동클리어)이 되가지고 SCL 값이 High, SDA, SCL 유효
-	while(!(TWCR&0x80));//TWINT 0 -> 1 이 되가지고 SCL 값이 0 이 될떄까지 기다림.
-	if((TWSR & 0xF8) != 0x18)Error((TWSR & 0xF8)); //SLA+W 문제 검출
-	
-	TWDR = 1;//어느 방에 쓰거나 읽을걸지
-	TWCR = 0x84;//명령으로 줘서 TWINT 1 -> 0(자동클리어)이 되가지고 SCL 값이 High, SDA, SCL 유효
-	while(!(TWCR&0x80));//TWINT 0 -> 1 이 되가지고 SCL 값이 0 이 될떄까지 기다림.
-	if((TWSR & 0xF8) != 0x28)Error((TWSR & 0xF8)); //SLA+W 문제 검출
-}
-void mpu6050_Write(void){
-	mpu6050_Start();
-	mpu6050_SLA_W();
-	TWDR = 'a';//무언가의 값을 쓸때 0xD0,mpu6050 읽을 떄  0xD1
-	TWCR = 0x84;//명령으로 줘서 TWINT 1 -> 0(자동클리어)이 되가지고 SCL 값이 High, SDA, SCL 유효
-	while(!(TWCR&0x80));//TWINT 0 -> 1 이 되가지고 SCL 값이 0 이 될떄까지 기다림.
-	if((TWSR & 0xF8) != 0x28)Error((TWSR & 0xF8)); //데이터 쓸 때  문제 검출
-	mpu6050_STOP();
-}
-void mpu6050_read(void){
-	mpu6050_Start();
-	mpu6050_SLA_W();
-	TWCR = 0xA4;//명령으로 줘서 TWINT 1 -> 0(자동클리어)이 되가지고 SCL 값이 High, SDA, SCL 유효
-	//START MASTER 지정
-	while(!(TWCR&0x80));//TWINT 0 -> 1 이 되가지고 SCL 값이 0 이 될떄까지 기다림.
-	if((TWSR & 0xF8) != 0x10)Error((TWSR & 0xF8)); //스타트 문제 검출
-	
-	TWDR = 0xD1;//무언가의 값을 쓸때 0xD0,mpu6050 읽을 떄  0xD1
-	TWCR = 0x84;//명령으로 줘서 TWINT 1 -> 0(자동클리어)이 되가지고 SCL 값이 High, SDA, SCL 유효
-	while(!(TWCR&0x80));//TWINT 0 -> 1 이 되가지고 SCL 값이 0 이 될떄까지 기다림.
-	if((TWSR & 0xF8) != 0x40)Error((TWSR & 0xF8)); //SLA+W 문제 검출
-	
-	TWCR = 0x84;//명령으로 줘서 TWINT 1 -> 0(자동클리어)이 되가지고 SCL 값이 High, SDA, SCL 유효
-	while(!(TWCR&0x80));//TWINT 0 -> 1 이 되가지고 SCL 값이 0 이 될떄까지 기다림.
-	if((TWSR & 0xF8) != 0x58)Error((TWSR & 0xF8)); //읽을 준비 검출
-	data = TWDR;
-	
-	mpu6050_STOP();
-	
-	while((EECR & 0x02) == 0x02); //받은 값 방 0번부터 시작해서 저장
-	EEAR = data_rom++;
-	EEDR = data;
-	EECR |= 0x04;
-	EECR |= 0x02;
-}
-void mpu6050_STOP(void){//들어가기 위한 비밀번호(SLA+W)
-	
-	TWCR = 0x94;//명령으로 줘서 TWINT 1 -> 0(자동클리어)이 되가지고 SCL 값이 High, SDA, SCL 유효
-	//STOP 기능한다.
-	_delay_ms(1000);
-}
-void Error(char error){
-	if(error == 0x20)PORTC = 0x01;//SLA+W 신호송신후 확인신호가 없음
-	else if(error == 0x38)PORTC = 0x02;// SLA+W 나 데이터 신호 후 문제 발생
-	else if(error == 0x30)PORTC = 0x04;//테이터 신호 송신 후 확인신호가 순신되지 않음
-	else PORTC = 0xFF;// TWI_START오류거나 그 외의 오류
-	
-	while((EECR & 0x02) == 0x02); //에러부분 저장 방 10번부터
-	EEAR = error_rom++;
-	EEDR = error;
-	EECR |= 0x04;
-	EECR |= 0x02;
-	while(1);
 }
