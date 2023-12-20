@@ -99,6 +99,7 @@ ISR(TIMER0_OVF_vect){
 
 void init() {
 	DDRA = 0xff;
+	DDRB = 0x10;
 	DDRC = 0xff;
 	DDRG = 0x0f;
 	PORTD = 3;
@@ -336,6 +337,17 @@ int main() {
 			}
 		}
 		// 스위치 끝
+		
+		// 버저 제어
+		if (status != FREE) {
+			PORTB = 0x10;
+			_delay_ms(2);
+			PORTB = 0x00;
+			_delay_ms(2);
+		}
+		else {
+			PORTB = 0x00;
+		}
 		
 		switch (status) {
 			case FREE:
